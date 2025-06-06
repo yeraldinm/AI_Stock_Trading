@@ -160,7 +160,8 @@ class PortfolioManagementSystem(TradingSystem):
                 columns=['Close']
             )
             day_count += 1
-            if day_count == 7:
+
+            if(day_count == 7):
                 day_count = 0
                 last_weeks_close = this_weeks_close
                 this_weeks_close = x['Close'][0]
