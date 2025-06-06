@@ -55,7 +55,7 @@ class PMModelDevelopment:
         X = data['Delta Close']
         y = data.drop(['Delta Close'], axis=1)
 
-        # Train test spit
+        # Train test split
         X_train, X_test, y_train, y_test = train_test_split(X, y)
 
         # Create the sequential
