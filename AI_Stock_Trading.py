@@ -23,7 +23,7 @@ class TradingSystem(abc.ABC):
 
     def __init__(self, api, symbol, time_frame, system_id, system_label):
         # Connect to api
-        # Connect to BrokenPipeError
+        # Connect to broker API
         # Save fields to class
         self.api = api
         self.symbol = symbol
@@ -52,8 +52,9 @@ class PMModelDevelopment:
     def __init__(self):
         # Read your data in and split the dependent and independent
         data = pd.read_csv('IBM.csv')
-        X = data['Delta Close']
-        y = data.drop(['Delta Close'], axis=1)
+        # Use a 2D frame for the feature and a 1D series for the label
+        X = data[['Delta Close']]
+        y = data['Signal']
 
         # Train test spit
         X_train, X_test, y_train, y_test = train_test_split(X, y)
@@ -97,8 +98,8 @@ class PortfolioManagementModel:
     def __init__(self):
         # Data in to test that the saving of weights worked
         data = pd.read_csv('IBM.csv')
-        X = data['Delta Close']
-        y = data.drop(['Delta Close'], axis=1)
+        X = data[['Delta Close']]
+        y = data['Signal']
 
         # Read structure from json
         json_file = open('model.json', 'r')
@@ -155,21 +156,22 @@ class PortfolioManagementSystem(TradingSystem):
             data_req = self.api.get_barset('IBM', timeframe='1D', limit=1).df
             # Construct dataframe to predict
             x = pd.DataFrame(
-                data=[[
-                    data_req['IBM']['close'][0]]], columns='Close'.split()
+                data=[[data_req['IBM']['close'][0]]],
+                columns=['Close']
             )
             day_count += 1
+
             if(day_count == 7):
                 day_count = 0
                 last_weeks_close = this_weeks_close
-                this_weeks_close = x['Close']
+                this_weeks_close = x['Close'][0]
                 delta = this_weeks_close - last_weeks_close
 
                 # AI choosing to buy, sell, or hold
-                if np.around(self.AI.network.predict([delta])) <= -.5:
+                pred = self.AI.network.predict([[delta]])
+                if np.around(pred) <= -0.5:
                     self.place_sell_order()
-
-                elif np.around(self.AI.network.predict([delta]) >= .5):
+                elif np.around(pred) >= 0.5:
                     self.place_buy_order()
 
 
