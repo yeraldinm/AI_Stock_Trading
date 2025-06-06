@@ -23,7 +23,7 @@ class TradingSystem(abc.ABC):
 
     def __init__(self, api, symbol, time_frame, system_id, system_label):
         # Connect to api
-        # Connect to BrokenPipeError
+        # Connect to broker API
         # Save fields to class
         self.api = api
         self.symbol = symbol
