@@ -12,7 +12,6 @@ from flask import Flask, render_template, jsonify, request, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
 import redis
-import pandas as pd
 import numpy as np
 from dataclasses import asdict
 import sys
@@ -224,6 +223,185 @@ def get_strategy_performance():
     """Get strategy performance data"""
     return jsonify(dashboard_manager.strategy_performance_cache)
 
+@app.route('/api/strategies')
+def get_strategies():
+    """Get list of all strategies and their status"""
+    if platform and platform.strategies:
+        strategies_data = {}
+        for strategy_id, strategy in platform.strategies.items():
+            strategies_data[strategy_id] = {
+                'id': strategy_id,
+                'name': strategy.name,
+                'enabled': strategy.enabled,
+                'symbols': strategy.symbols,
+                'parameters': strategy.parameters,
+                'performance': strategy.get_performance_summary(),
+                'positions': {symbol: pos.to_dict() for symbol, pos in strategy.positions.items()},
+                'orders_count': len(strategy.orders),
+                'last_update': strategy.last_update.isoformat() if strategy.last_update else None
+            }
+        return jsonify(strategies_data)
+    return jsonify({})
+
+@app.route('/api/strategies/<strategy_id>/start', methods=['POST'])
+def start_strategy(strategy_id):
+    """Start a specific strategy"""
+    if platform and strategy_id in platform.strategies:
+        strategy = platform.strategies[strategy_id]
+        strategy.enabled = True
+        logger.info(f"Strategy {strategy_id} started")
+        return jsonify({'status': 'success', 'message': f'Strategy {strategy.name} started'})
+    return jsonify({'status': 'error', 'message': 'Strategy not found'}), 404
+
+@app.route('/api/strategies/<strategy_id>/stop', methods=['POST'])
+def stop_strategy(strategy_id):
+    """Stop a specific strategy"""
+    if platform and strategy_id in platform.strategies:
+        strategy = platform.strategies[strategy_id]
+        strategy.enabled = False
+        logger.info(f"Strategy {strategy_id} stopped")
+        return jsonify({'status': 'success', 'message': f'Strategy {strategy.name} stopped'})
+    return jsonify({'status': 'error', 'message': 'Strategy not found'}), 404
+
+@app.route('/api/strategies/<strategy_id>/restart', methods=['POST'])
+def restart_strategy(strategy_id):
+    """Restart a specific strategy"""
+    if platform and strategy_id in platform.strategies:
+        strategy = platform.strategies[strategy_id]
+        strategy.enabled = False
+        # Wait a moment then re-enable
+        import time
+        time.sleep(0.5)
+        strategy.enabled = True
+        logger.info(f"Strategy {strategy_id} restarted")
+        return jsonify({'status': 'success', 'message': f'Strategy {strategy.name} restarted'})
+    return jsonify({'status': 'error', 'message': 'Strategy not found'}), 404
+
+@app.route('/api/strategies/<strategy_id>/performance')
+def get_strategy_performance_detail(strategy_id):
+    """Get detailed performance data for a specific strategy"""
+    if platform and strategy_id in platform.strategies:
+        strategy = platform.strategies[strategy_id]
+        performance_data = {
+            'basic_metrics': strategy.get_performance_summary(),
+            'trade_history': list(strategy.trade_history)[-100:],  # Last 100 trades
+            'pnl_history': list(strategy.pnl_history),
+            'positions': {symbol: pos.to_dict() for symbol, pos in strategy.positions.items()},
+            'active_orders': [order.to_dict() for order in strategy.orders.values() if order.status in ['PENDING', 'PARTIALLY_FILLED']],
+            'signals': list(strategy.signals)[-50:] if hasattr(strategy, 'signals') else []
+        }
+        return jsonify(performance_data)
+    return jsonify({'error': 'Strategy not found'}), 404
+
+@app.route('/api/strategies/<strategy_id>/positions')
+def get_strategy_positions(strategy_id):
+    """Get positions for a specific strategy"""
+    if platform and strategy_id in platform.strategies:
+        strategy = platform.strategies[strategy_id]
+        positions_data = {
+            symbol: {
+                'symbol': pos.symbol,
+                'quantity': pos.quantity,
+                'average_price': pos.average_price,
+                'market_value': pos.market_value,
+                'unrealized_pnl': pos.unrealized_pnl,
+                'realized_pnl': pos.realized_pnl,
+                'is_flat': pos.is_flat
+            }
+            for symbol, pos in strategy.positions.items()
+            if not pos.is_flat
+        }
+        return jsonify(positions_data)
+    return jsonify({})
+
+@app.route('/api/strategies/<strategy_id>/trades')
+def get_strategy_trades(strategy_id):
+    """Get trade history for a specific strategy"""
+    if platform and strategy_id in platform.strategies:
+        strategy = platform.strategies[strategy_id]
+        trades_data = []
+        
+        # Get recent trades from trade history
+        for trade in list(strategy.trade_history)[-100:]:  # Last 100 trades
+            if hasattr(trade, 'to_dict'):
+                trades_data.append(trade.to_dict())
+            else:
+                trades_data.append(trade)
+        
+        return jsonify(trades_data)
+    return jsonify([])
+
+@app.route('/api/strategies/create', methods=['POST'])
+def create_strategy():
+    """Create a new strategy instance"""
+    try:
+        data = request.json
+        strategy_type = data.get('type')
+        symbols = data.get('symbols', [])
+        parameters = data.get('parameters', {})
+        
+        if not strategy_type or not symbols:
+            return jsonify({'error': 'Strategy type and symbols are required'}), 400
+        
+        if not platform:
+            return jsonify({'error': 'Trading platform is not running'}), 400
+        
+        # Generate unique strategy ID
+        import time
+        strategy_id = f"{strategy_type}_{int(time.time())}"
+        
+        # Create strategy based on type
+        if strategy_type == "MeanReversion":
+            from strategies.mean_reversion import MeanReversionStrategy
+            strategy = MeanReversionStrategy(
+                strategy_id=strategy_id,
+                symbols=symbols,
+                parameters=parameters
+            )
+        else:
+            return jsonify({'error': f'Unknown strategy type: {strategy_type}'}), 400
+        
+        # Set up strategy callbacks
+        strategy.add_order_callback(platform._on_strategy_order)
+        strategy.add_signal_callback(platform._on_strategy_signal)
+        
+        # Add to platform
+        platform.strategies[strategy_id] = strategy
+        platform.stats['strategies_active'] = len(platform.strategies)
+        
+        logger.info(f"Created new strategy: {strategy_type} ({strategy_id})")
+        
+        return jsonify({
+            'status': 'success',
+            'strategy_id': strategy_id,
+            'message': f'Strategy {strategy_type} created successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error creating strategy: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/strategies/<strategy_id>/delete', methods=['DELETE'])
+def delete_strategy(strategy_id):
+    """Delete a strategy"""
+    if platform and strategy_id in platform.strategies:
+        strategy = platform.strategies[strategy_id]
+        
+        # Stop the strategy first
+        strategy.enabled = False
+        
+        # Cancel any active orders
+        # Note: In a real implementation, you'd want to cancel orders through the order manager
+        
+        # Remove from platform
+        del platform.strategies[strategy_id]
+        platform.stats['strategies_active'] = len(platform.strategies)
+        
+        logger.info(f"Deleted strategy {strategy_id}")
+        return jsonify({'status': 'success', 'message': 'Strategy deleted successfully'})
+    
+    return jsonify({'status': 'error', 'message': 'Strategy not found'}), 404
+
 @app.route('/api/historical-data/<symbol>')
 def get_historical_data(symbol):
     """Get historical price data for charting"""
@@ -232,25 +410,28 @@ def get_historical_data(symbol):
     start_time = end_time - timedelta(days=30)
     
     # Sample data generation (replace with actual data retrieval)
-    dates = pd.date_range(start=start_time, end=end_time, freq='1H')
+    import datetime
+    current_time = start_time
     base_price = 150.0  # Sample base price
     
     historical_data = []
     current_price = base_price
     
-    for date in dates:
+    while current_time <= end_time:
         # Simple random walk for demonstration
         change = np.random.normal(0, 0.5)
         current_price += change
         
         historical_data.append({
-            'timestamp': date.isoformat(),
+            'timestamp': current_time.isoformat(),
             'open': current_price,
             'high': current_price + abs(np.random.normal(0, 0.3)),
             'low': current_price - abs(np.random.normal(0, 0.3)),
             'close': current_price,
             'volume': np.random.randint(1000, 10000)
         })
+        
+        current_time += timedelta(hours=1)
     
     return jsonify(historical_data)
 
@@ -349,6 +530,23 @@ def platform_status_emitter():
             status = {}
             if platform:
                 status = platform.get_platform_status()
+                
+                # Also emit strategy updates
+                if platform.strategies:
+                    strategies_data = {}
+                    for strategy_id, strategy in platform.strategies.items():
+                        strategies_data[strategy_id] = {
+                            'id': strategy_id,
+                            'name': strategy.name,
+                            'enabled': strategy.enabled,
+                            'symbols': strategy.symbols,
+                            'parameters': strategy.parameters,
+                            'performance': strategy.get_performance_summary(),
+                            'positions': {symbol: pos.to_dict() for symbol, pos in strategy.positions.items()},
+                            'orders_count': len(strategy.orders),
+                            'last_update': strategy.last_update.isoformat() if strategy.last_update else None
+                        }
+                    socketio.emit('strategy_status_update', strategies_data)
             else:
                 status = {'running': False}
                 

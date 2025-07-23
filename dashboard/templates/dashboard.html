@@ -453,6 +453,133 @@
                     </div>
                 </div>
 
+                <!-- Strategy Management -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="bi bi-cpu me-2"></i>
+                            Trading Strategies
+                        </h5>
+                        <div class="btn-group btn-group-sm">
+                            <button type="button" class="btn btn-success" id="create-strategy-btn">
+                                <i class="bi bi-plus-circle me-1"></i>Create
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary" id="refresh-strategies-btn">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-dark table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Strategy</th>
+                                        <th>Status</th>
+                                        <th>Symbols</th>
+                                        <th>P&L</th>
+                                        <th>Positions</th>
+                                        <th>Orders</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="strategies-table">
+                                    <!-- Strategies will be populated here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Strategy Details Modal -->
+                <div class="modal fade" id="strategyModal" tabindex="-1">
+                    <div class="modal-dialog modal-xl">
+                        <div class="modal-content bg-dark">
+                            <div class="modal-header border-secondary">
+                                <h5 class="modal-title">Strategy Details</h5>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <h6>Performance Metrics</h6>
+                                        <div id="strategy-metrics"></div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <h6>Active Positions</h6>
+                                        <div id="strategy-positions"></div>
+                                    </div>
+                                </div>
+                                <div class="row mt-3">
+                                    <div class="col-12">
+                                        <h6>Recent Trades</h6>
+                                        <div id="strategy-trades"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Create Strategy Modal -->
+                <div class="modal fade" id="createStrategyModal" tabindex="-1">
+                    <div class="modal-dialog">
+                        <div class="modal-content bg-dark">
+                            <div class="modal-header border-secondary">
+                                <h5 class="modal-title">Create New Strategy</h5>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <form id="create-strategy-form">
+                                    <div class="mb-3">
+                                        <label for="strategy-type" class="form-label">Strategy Type</label>
+                                        <select class="form-select" id="strategy-type" required>
+                                            <option value="">Select Strategy Type</option>
+                                            <option value="MeanReversion">Mean Reversion</option>
+                                        </select>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="strategy-symbols" class="form-label">Symbols (comma-separated)</label>
+                                        <input type="text" class="form-control" id="strategy-symbols" 
+                                               placeholder="AAPL,GOOGL,MSFT" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Parameters</label>
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <label for="lookback-period" class="form-label small">Lookback Period</label>
+                                                <input type="number" class="form-control form-control-sm" 
+                                                       id="lookback-period" value="20" min="5" max="100">
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label for="deviation-threshold" class="form-label small">Deviation Threshold</label>
+                                                <input type="number" class="form-control form-control-sm" 
+                                                       id="deviation-threshold" value="2.0" min="0.5" max="5" step="0.1">
+                                            </div>
+                                        </div>
+                                        <div class="row mt-2">
+                                            <div class="col-md-6">
+                                                <label for="max-position-size" class="form-label small">Max Position Size</label>
+                                                <input type="number" class="form-control form-control-sm" 
+                                                       id="max-position-size" value="1000" min="100" max="10000">
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label for="stop-loss" class="form-label small">Stop Loss (%)</label>
+                                                <input type="number" class="form-control form-control-sm" 
+                                                       id="stop-loss" value="2" min="0.5" max="10" step="0.1">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </form>
+                            </div>
+                            <div class="modal-footer border-secondary">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                <button type="button" class="btn btn-success" id="create-strategy-submit">Create Strategy</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Recent Orders -->
                 <div class="card">
                     <div class="card-header">

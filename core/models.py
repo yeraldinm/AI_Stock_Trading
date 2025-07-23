@@ -195,6 +195,29 @@ class Order:
             self.status = OrderStatus.PARTIALLY_FILLED
         
         self.updated_at = datetime.now(timezone.utc)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert order to dictionary"""
+        return {
+            'id': self.id,
+            'symbol': self.symbol,
+            'side': self.side.value,
+            'order_type': self.order_type.value,
+            'quantity': self.quantity,
+            'price': self.price,
+            'stop_price': self.stop_price,
+            'time_in_force': self.time_in_force.value,
+            'status': self.status.value,
+            'filled_quantity': self.filled_quantity,
+            'remaining_quantity': self.remaining_quantity,
+            'average_fill_price': self.average_fill_price,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+            'strategy_id': self.strategy_id,
+            'client_order_id': self.client_order_id,
+            'broker_order_id': self.broker_order_id,
+            'metadata': self.metadata
+        }
 
 
 @dataclass
@@ -210,6 +233,21 @@ class Fill:
     commission: float = 0.0
     exchange: Optional[str] = None
     execution_id: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert fill to dictionary"""
+        return {
+            'id': self.id,
+            'order_id': self.order_id,
+            'symbol': self.symbol,
+            'side': self.side.value,
+            'quantity': self.quantity,
+            'price': self.price,
+            'timestamp': self.timestamp.isoformat(),
+            'commission': self.commission,
+            'exchange': self.exchange,
+            'execution_id': self.execution_id
+        }
 
 
 @dataclass
@@ -247,6 +285,21 @@ class Position:
             self.market_value = 0.0
             self.unrealized_pnl = 0.0
         self.last_update = datetime.now(timezone.utc)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert position to dictionary"""
+        return {
+            'symbol': self.symbol,
+            'quantity': self.quantity,
+            'average_price': self.average_price,
+            'market_value': self.market_value,
+            'unrealized_pnl': self.unrealized_pnl,
+            'realized_pnl': self.realized_pnl,
+            'is_long': self.is_long,
+            'is_short': self.is_short,
+            'is_flat': self.is_flat,
+            'last_update': self.last_update.isoformat()
+        }
     
     def add_fill(self, fill: Fill):
         """Add a fill to the position"""
