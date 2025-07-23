@@ -58,3 +58,11 @@ plotly>=5.10.0
 # Performance Monitoring
 py-spy>=0.3.0
 memory-profiler>=0.60.0
+
+# Dashboard Dependencies
+Flask==2.3.3
+Flask-SocketIO==5.3.6
+Flask-CORS==4.0.0
+python-socketio==5.9.0
+gunicorn==21.2.0
+eventlet==0.33.3
