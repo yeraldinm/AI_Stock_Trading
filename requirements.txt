@@ -23,6 +23,7 @@ numba>=0.56.0  # JIT compilation for numpy
 # Message Queue & Streaming
 redis>=4.3.0
 kafka-python>=2.0.0
+aiokafka>=0.8.0  # Async Kafka client for non-blocking operations
 websockets>=10.0
 
 # Database & Storage

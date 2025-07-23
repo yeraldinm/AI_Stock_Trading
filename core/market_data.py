@@ -15,7 +15,8 @@ import websockets
 import redis
 import numpy as np
 import pandas as pd
-from kafka import KafkaProducer, KafkaConsumer
+from kafka import KafkaProducer
+from aiokafka import AIOKafkaConsumer
 
 from .models import (
     Tick, OHLCV, OrderBook, MarketData, 
@@ -315,7 +316,7 @@ class MarketDataManager:
                 compression_type='snappy'
             )
             
-            self.kafka_consumer = KafkaConsumer(
+            self.kafka_consumer = AIOKafkaConsumer(
                 'market_data',
                 bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
                 group_id=config.KAFKA_CONSUMER_GROUP,
@@ -498,16 +499,24 @@ class MarketDataManager:
     async def _consume_kafka(self):
         """Consume messages from Kafka"""
         try:
-            for message in self.kafka_consumer:
+            # Start the consumer
+            await self.kafka_consumer.start()
+            
+            # Consume messages asynchronously
+            async for message in self.kafka_consumer:
                 if not self.running:
                     break
                 
                 # Process Kafka message if needed
                 # This can be used for distributed market data processing
+                # message.value contains the deserialized data
                 pass
                 
         except Exception as e:
             logger.error(f"Kafka consumer error: {e}")
+        finally:
+            # Stop the consumer
+            await self.kafka_consumer.stop()
     
     async def stop(self):
         """Stop all market data feeds"""
@@ -523,7 +532,7 @@ class MarketDataManager:
             self.kafka_producer.close()
         
         if self.kafka_consumer:
-            self.kafka_consumer.close()
+            await self.kafka_consumer.stop()
     
     def get_stats(self) -> Dict[str, Any]:
         """Get performance statistics"""
