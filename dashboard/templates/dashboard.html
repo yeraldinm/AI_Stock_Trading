@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Trading Dashboard</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --border-color: #30363d;
+            --success: #238636;
+            --danger: #da3633;
+            --warning: #f85149;
+            --info: #1f6feb;
+        }
+        
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+        }
+        
+        .navbar {
+            background-color: var(--bg-secondary) !important;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+        
+        .card-header {
+            background-color: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+        }
+        
+        .table-dark {
+            --bs-table-bg: var(--bg-secondary);
+            --bs-table-border-color: var(--border-color);
+        }
+        
+        .btn-success {
+            background-color: var(--success);
+            border-color: var(--success);
+        }
+        
+        .btn-danger {
+            background-color: var(--danger);
+            border-color: var(--danger);
+        }
+        
+        .text-success {
+            color: var(--success) !important;
+        }
+        
+        .text-danger {
+            color: var(--danger) !important;
+        }
+        
+        .text-warning {
+            color: var(--warning) !important;
+        }
+        
+        .text-info {
+            color: var(--info) !important;
+        }
+        
+        .metric-card {
+            transition: transform 0.2s;
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-2px);
+        }
+        
+        .price-up {
+            color: var(--success);
+            animation: pulse-green 1s;
+        }
+        
+        .price-down {
+            color: var(--danger);
+            animation: pulse-red 1s;
+        }
+        
+        @keyframes pulse-green {
+            0% { background-color: transparent; }
+            50% { background-color: rgba(35, 134, 54, 0.2); }
+            100% { background-color: transparent; }
+        }
+        
+        @keyframes pulse-red {
+            0% { background-color: transparent; }
+            50% { background-color: rgba(218, 54, 51, 0.2); }
+            100% { background-color: transparent; }
+        }
+        
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+        }
+        
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+        
+        .trading-panel {
+            position: sticky;
+            top: 20px;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+        
+        .order-book {
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+        }
+        
+        .scrollable-table {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .form-control, .form-select {
+            background-color: var(--bg-tertiary);
+            border-color: var(--border-color);
+            color: var(--text-primary);
+        }
+        
+        .form-control:focus, .form-select:focus {
+            background-color: var(--bg-tertiary);
+            border-color: var(--info);
+            color: var(--text-primary);
+            box-shadow: 0 0 0 0.2rem rgba(31, 111, 235, 0.25);
+        }
+        
+        .alert-custom {
+            border-radius: 6px;
+            border: none;
+        }
+        
+        .performance-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .indicator-green { background-color: var(--success); }
+        .indicator-red { background-color: var(--danger); }
+        .indicator-yellow { background-color: var(--warning); }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="#">
+                <i class="bi bi-graph-up me-2"></i>
+                Trading Dashboard
+            </a>
+            <div class="navbar-nav ms-auto">
+                <span class="navbar-text me-3">
+                    <i class="bi bi-clock me-1"></i>
+                    <span id="current-time"></span>
+                </span>
+                <div class="connection-status">
+                    <span id="connection-status" class="badge bg-secondary">
+                        <i class="bi bi-wifi-off"></i> Connecting...
+                    </span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid py-3">
+        <div class="row">
+            <!-- Left Panel - Market Data & Charts -->
+            <div class="col-lg-8">
+                <!-- Portfolio Overview -->
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="card metric-card h-100">
+                            <div class="card-body text-center">
+                                <h6 class="card-title text-secondary mb-1">Total Value</h6>
+                                <h4 class="mb-0" id="total-value">$0.00</h4>
+                                <small class="text-secondary">Portfolio</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card metric-card h-100">
+                            <div class="card-body text-center">
+                                <h6 class="card-title text-secondary mb-1">P&L Today</h6>
+                                <h4 class="mb-0" id="pnl-today">$0.00</h4>
+                                <small class="text-secondary">Daily</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card metric-card h-100">
+                            <div class="card-body text-center">
+                                <h6 class="card-title text-secondary mb-1">Cash</h6>
+                                <h4 class="mb-0" id="cash-balance">$0.00</h4>
+                                <small class="text-secondary">Available</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card metric-card h-100">
+                            <div class="card-body text-center">
+                                <h6 class="card-title text-secondary mb-1">Total P&L</h6>
+                                <h4 class="mb-0" id="pnl-total">$0.00</h4>
+                                <small class="text-secondary">All Time</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Market Data Table -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="bi bi-graph-up me-2"></i>
+                            Market Data
+                        </h5>
+                        <div class="btn-group btn-group-sm" role="group">
+                            <button type="button" class="btn btn-outline-secondary active" data-view="watchlist">Watchlist</button>
+                            <button type="button" class="btn btn-outline-secondary" data-view="gainers">Gainers</button>
+                            <button type="button" class="btn btn-outline-secondary" data-view="losers">Losers</button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-dark table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Price</th>
+                                        <th>Change</th>
+                                        <th>Change %</th>
+                                        <th>Volume</th>
+                                        <th>Bid</th>
+                                        <th>Ask</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="market-data-table">
+                                    <!-- Market data will be populated here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Price Chart -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="bi bi-bar-chart me-2"></i>
+                            Price Chart
+                        </h5>
+                        <select class="form-select form-select-sm w-auto" id="chart-symbol">
+                            <option value="AAPL">AAPL</option>
+                            <option value="GOOGL">GOOGL</option>
+                            <option value="MSFT">MSFT</option>
+                            <option value="TSLA">TSLA</option>
+                        </select>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="price-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Positions -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="bi bi-briefcase me-2"></i>
+                            Positions
+                        </h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-dark table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Quantity</th>
+                                        <th>Avg Price</th>
+                                        <th>Market Value</th>
+                                        <th>Unrealized P&L</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="positions-table">
+                                    <!-- Positions will be populated here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel - Trading & Risk -->
+            <div class="col-lg-4">
+                <!-- Trading Panel -->
+                <div class="card trading-panel mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="bi bi-currency-exchange me-2"></i>
+                            Quick Trade
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="trade-form">
+                            <div class="mb-3">
+                                <label for="trade-symbol" class="form-label">Symbol</label>
+                                <select class="form-select" id="trade-symbol" required>
+                                    <option value="">Select Symbol</option>
+                                    <option value="AAPL">AAPL</option>
+                                    <option value="GOOGL">GOOGL</option>
+                                    <option value="MSFT">MSFT</option>
+                                    <option value="TSLA">TSLA</option>
+                                    <option value="AMZN">AMZN</option>
+                                    <option value="NVDA">NVDA</option>
+                                    <option value="META">META</option>
+                                    <option value="NFLX">NFLX</option>
+                                </select>
+                            </div>
+                            <div class="row mb-3">
+                                <div class="col-6">
+                                    <label for="trade-side" class="form-label">Side</label>
+                                    <select class="form-select" id="trade-side" required>
+                                        <option value="BUY">Buy</option>
+                                        <option value="SELL">Sell</option>
+                                    </select>
+                                </div>
+                                <div class="col-6">
+                                    <label for="trade-type" class="form-label">Type</label>
+                                    <select class="form-select" id="trade-type" required>
+                                        <option value="MARKET">Market</option>
+                                        <option value="LIMIT">Limit</option>
+                                        <option value="STOP">Stop</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="trade-quantity" class="form-label">Quantity</label>
+                                <input type="number" class="form-control" id="trade-quantity" min="1" required>
+                            </div>
+                            <div class="mb-3" id="price-field" style="display: none;">
+                                <label for="trade-price" class="form-label">Price</label>
+                                <input type="number" class="form-control" id="trade-price" step="0.01">
+                            </div>
+                            <div class="d-grid">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="bi bi-send me-2"></i>
+                                    Place Order
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Risk Metrics -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="bi bi-shield-check me-2"></i>
+                            Risk Metrics
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-6">
+                                <div class="text-center">
+                                    <small class="text-secondary">VaR 95%</small>
+                                    <div class="h6 mb-0" id="var-95">$0.00</div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="text-center">
+                                    <small class="text-secondary">Max Drawdown</small>
+                                    <div class="h6 mb-0" id="max-drawdown">0.00%</div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="text-center">
+                                    <small class="text-secondary">Sharpe Ratio</small>
+                                    <div class="h6 mb-0" id="sharpe-ratio">0.00</div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="text-center">
+                                    <small class="text-secondary">Volatility</small>
+                                    <div class="h6 mb-0" id="volatility">0.00%</div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="text-center">
+                                    <small class="text-secondary">Beta</small>
+                                    <div class="h6 mb-0" id="beta">0.00</div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="text-center">
+                                    <small class="text-secondary">Exposure</small>
+                                    <div class="h6 mb-0" id="exposure">0.00%</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Strategy Performance -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="bi bi-cpu me-2"></i>
+                            Strategy Performance
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="strategy-performance">
+                            <!-- Strategy performance will be populated here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Orders -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="bi bi-list-ul me-2"></i>
+                            Recent Orders
+                        </h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="scrollable-table">
+                            <table class="table table-dark table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Side</th>
+                                        <th>Qty</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="orders-table">
+                                    <!-- Orders will be populated here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="notification-toast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header">
+                <i class="bi bi-bell-fill me-2"></i>
+                <strong class="me-auto">Notification</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body">
+                <!-- Notification content -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Custom JavaScript -->
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
