@@ -483,3 +483,74 @@ class SignalBasedStrategy(BaseStrategy):
             
         except Exception as e:
             logger.error(f"Portfolio rebalancing error: {e}")
+    
+    def get_performance_summary(self) -> dict:
+        """Get strategy performance summary"""
+        try:
+            total_pnl = sum(pos.unrealized_pnl + pos.realized_pnl for pos in self.positions.values())
+            total_trades = len(self.trade_history)
+            winning_trades = len([t for t in self.trade_history if getattr(t, 'pnl', 0) > 0])
+            
+            return {
+                'strategy_id': self.strategy_id,
+                'name': self.name,
+                'enabled': self.enabled,
+                'total_pnl': total_pnl,
+                'unrealized_pnl': sum(pos.unrealized_pnl for pos in self.positions.values()),
+                'realized_pnl': sum(pos.realized_pnl for pos in self.positions.values()),
+                'total_trades': total_trades,
+                'winning_trades': winning_trades,
+                'win_rate': winning_trades / total_trades if total_trades > 0 else 0,
+                'active_positions': len([p for p in self.positions.values() if not p.is_flat]),
+                'active_orders': len([o for o in self.orders.values() if o.status in ['PENDING', 'PARTIALLY_FILLED']]),
+                'uptime_seconds': time.time() - self.start_time,
+                'last_update': self.last_update.isoformat() if self.last_update else None,
+                'signals_generated': len(self.signals)
+            }
+        except Exception as e:
+            logger.error(f"Error getting performance summary: {e}")
+            return {
+                'strategy_id': self.strategy_id,
+                'name': self.name,
+                'enabled': self.enabled,
+                'error': str(e)
+            }
+    
+    def get_position(self, symbol: str) -> 'Position':
+        """Get position for symbol, creating empty one if doesn't exist"""
+        if symbol not in self.positions:
+            from core.models import Position
+            self.positions[symbol] = Position(symbol=symbol)
+        return self.positions[symbol]
+    
+    def get_price_history(self, symbol: str, periods: int) -> List[float]:
+        """Get price history for symbol"""
+        if symbol not in self.market_data_buffer:
+            return []
+        
+        prices = []
+        for data in list(self.market_data_buffer[symbol])[-periods:]:
+            if data.price:
+                prices.append(data.price)
+        
+        return prices
+    
+    async def shutdown(self):
+        """Shutdown strategy gracefully"""
+        try:
+            logger.info(f"Shutting down strategy {self.name} ({self.strategy_id})")
+            
+            # Disable strategy
+            self.enabled = False
+            
+            # Cancel all pending orders
+            for order in self.orders.values():
+                if order.status in ['PENDING', 'PARTIALLY_FILLED']:
+                    order.status = OrderStatus.CANCELLED
+            
+            # Log final performance
+            performance = self.get_performance_summary()
+            logger.info(f"Strategy {self.name} final performance: {performance}")
+            
+        except Exception as e:
+            logger.error(f"Strategy shutdown error: {e}")
