@@ -14,9 +14,9 @@ alpaca-trade-api>=2.3.0
 ccxt>=3.0.0  # Multi-exchange support
 
 # High Performance & Low Latency
-asyncio>=3.4.4
+asyncio
 aiohttp>=3.8.0
-uvloop>=0.17.0  # Faster event loop
+# uvloop>=0.17.0  # Faster event loop
 cython>=0.29.0  # For performance critical code
 numba>=0.56.0  # JIT compilation for numpy
 

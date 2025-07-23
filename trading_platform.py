@@ -10,7 +10,16 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 import json
 
-import uvloop
+try:
+    import uvloop
+    import sys
+    if sys.platform != "win32":
+        uvloop.install()
+        print("uvloop installed as event loop.")
+    else:
+        print("uvloop is not supported on Windows. Using default event loop.")
+except ImportError:
+    print("uvloop is not installed. Using default event loop.")
 import structlog
 
 from config import config, DEFAULT_INSTRUMENTS, DEFAULT_STRATEGIES

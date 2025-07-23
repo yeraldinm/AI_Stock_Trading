@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Callable, Any, Set
 import logging
+import inspect
 
 import aiohttp
 import websockets
@@ -86,6 +87,7 @@ class WebSocketDataFeed:
     async def connect(self):
         """Connect to WebSocket feed"""
         try:
+            logger.debug(f"Attempting to connect to WebSocket: {self.url} with symbols: {self.symbols}")
             self.websocket = await websockets.connect(
                 self.url,
                 ping_interval=30,
@@ -94,12 +96,80 @@ class WebSocketDataFeed:
             )
             logger.info(f"Connected to WebSocket feed: {self.url}")
             self.reconnect_count = 0
-            
-            # Subscribe to symbols
-            await self._subscribe()
-            
+            # Alpaca: Wait for 'connected', then authenticate, then subscribe
+            if "alpaca" in self.url:
+                await self._alpaca_handshake_and_auth()
+            else:
+                await self._subscribe()
         except Exception as e:
-            logger.error(f"Failed to connect to WebSocket: {e}")
+            logger.error(f"Failed to connect to WebSocket: {e}", exc_info=True)
+            logger.debug(f"WebSocket connection parameters: url={self.url}, symbols={self.symbols}")
+            raise
+    
+    async def _alpaca_handshake_and_auth(self):
+        """Wait for 'connected', then authenticate, then subscribe for Alpaca WebSocket."""
+        # Wait for the initial 'connected' message
+        try:
+            logger.debug("Waiting for Alpaca 'connected' message...")
+            response = await asyncio.wait_for(self.websocket.recv(), timeout=5)
+            logger.debug(f"Received Alpaca handshake response: {response}")
+            data = json.loads(response)
+            if isinstance(data, list):
+                found = False
+                for msg in data:
+                    if msg.get("T") == "success" and msg.get("msg", "") == "connected":
+                        found = True
+                        break
+                if not found:
+                    logger.error(f"Did not receive expected 'connected' message from Alpaca: {data}")
+                    raise Exception(f"Did not receive expected 'connected' message from Alpaca: {data}")
+            elif isinstance(data, dict):
+                if not (data.get("T") == "success" and data.get("msg", "") == "connected"):
+                    logger.error(f"Did not receive expected 'connected' message from Alpaca: {data}")
+                    raise Exception(f"Did not receive expected 'connected' message from Alpaca: {data}")
+            logger.info("Alpaca WebSocket handshake successful. Proceeding to authenticate.")
+        except Exception as e:
+            logger.error(f"Exception during Alpaca WebSocket handshake: {e}", exc_info=True)
+            raise
+        # Authenticate
+        await self._authenticate_alpaca()
+        # Subscribe
+        await self._subscribe()
+    
+    async def _authenticate_alpaca(self):
+        """Authenticate with Alpaca WebSocket API before subscribing."""
+        from config import config
+        auth_msg = {
+            "action": "auth",
+            "key": config.ALPACA_API_KEY,
+            "secret": config.ALPACA_SECRET_KEY
+        }
+        logger.debug(f"Sending Alpaca auth message: {auth_msg}")
+        await self.websocket.send(json.dumps(auth_msg))
+        # Wait for auth response
+        try:
+            response = await asyncio.wait_for(self.websocket.recv(), timeout=5)
+            logger.debug(f"Received Alpaca auth response: {response}")
+            data = json.loads(response)
+            if isinstance(data, list):
+                for msg in data:
+                    if msg.get("T") == "error":
+                        logger.error(f"Alpaca WebSocket auth error: {msg}")
+                        raise Exception(f"Alpaca WebSocket auth error: {msg}")
+                    if msg.get("T") == "success" and msg.get("msg", "") == "authenticated":
+                        logger.info("Alpaca WebSocket authenticated successfully.")
+                        return
+            elif isinstance(data, dict):
+                if data.get("T") == "error":
+                    logger.error(f"Alpaca WebSocket auth error: {data}")
+                    raise Exception(f"Alpaca WebSocket auth error: {data}")
+                if data.get("T") == "success" and data.get("msg", "") == "authenticated":
+                    logger.info("Alpaca WebSocket authenticated successfully.")
+                    return
+            logger.error(f"Unexpected Alpaca auth response: {data}")
+            raise Exception(f"Unexpected Alpaca auth response: {data}")
+        except Exception as e:
+            logger.error(f"Exception during Alpaca WebSocket authentication: {e}", exc_info=True)
             raise
     
     async def _subscribe(self):
@@ -127,18 +197,22 @@ class WebSocketDataFeed:
                         break
                     
                     try:
+                        logger.debug(f"Received WebSocket message: {message}")
                         data = json.loads(message)
                         await self._process_message(data)
                     except json.JSONDecodeError as e:
                         logger.error(f"Failed to parse message: {e}")
+                        logger.debug(f"Raw message: {message}")
                     except Exception as e:
-                        logger.error(f"Error processing message: {e}")
+                        logger.error(f"Error processing message: {e}", exc_info=True)
+                        logger.debug(f"Raw message: {message}")
                         
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("WebSocket connection closed")
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.warning(f"WebSocket connection closed: {e}")
+                logger.debug(f"ConnectionClosed details: code={getattr(e, 'code', None)}, reason={getattr(e, 'reason', None)}")
                 await self._handle_reconnect()
             except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+                logger.error(f"WebSocket error: {e}", exc_info=True)
                 await self._handle_reconnect()
     
     async def _handle_reconnect(self):
@@ -146,6 +220,7 @@ class WebSocketDataFeed:
         if not self.running:
             return
             
+        logger.debug(f"Handling reconnect: reconnect_count={self.reconnect_count}, max_reconnect_attempts={self.max_reconnect_attempts}")
         self.websocket = None
         self.reconnect_count += 1
         
@@ -182,16 +257,38 @@ class WebSocketDataFeed:
                 # Call all callbacks
                 for callback in self.callbacks:
                     try:
-                        callback(market_data)
+                        if inspect.iscoroutinefunction(callback):
+                            asyncio.create_task(callback(market_data))
+                        else:
+                            callback(market_data)
                     except Exception as e:
                         logger.error(f"Callback error: {e}")
     
     def _parse_quote(self, data: Dict[str, Any]) -> Optional[MarketData]:
         """Parse quote message"""
         try:
+            t_val = data['t']
+            timestamp = None
+            if isinstance(t_val, int):
+                timestamp = datetime.fromtimestamp(t_val / 1000, timezone.utc)
+            else:
+                try:
+                    t_val_int = int(t_val)
+                    timestamp = datetime.fromtimestamp(t_val_int / 1000, timezone.utc)
+                except Exception:
+                    # Try ISO8601 string
+                    try:
+                        iso_str = t_val.rstrip('Z')
+                        timestamp = datetime.fromisoformat(iso_str)
+                        if timestamp.tzinfo is None:
+                            timestamp = timestamp.replace(tzinfo=timezone.utc)
+                        logger.debug(f"Parsed ISO8601 quote timestamp: {t_val} -> {timestamp}")
+                    except Exception as e:
+                        logger.error(f"Failed to parse quote timestamp: {t_val}, error: {e}")
+                        return None
             tick = Tick(
                 symbol=data['S'],
-                timestamp=datetime.fromtimestamp(data['t'] / 1000, timezone.utc),
+                timestamp=timestamp,
                 bid=float(data['bp']),
                 ask=float(data['ap']),
                 bid_size=int(data['bs']),
@@ -203,16 +300,35 @@ class WebSocketDataFeed:
                 timestamp=tick.timestamp,
                 tick=tick
             )
-        except (KeyError, ValueError) as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.error(f"Failed to parse quote: {e}")
             return None
     
     def _parse_trade(self, data: Dict[str, Any]) -> Optional[MarketData]:
         """Parse trade message"""
         try:
+            t_val = data['t']
+            timestamp = None
+            if isinstance(t_val, int):
+                timestamp = datetime.fromtimestamp(t_val / 1000, timezone.utc)
+            else:
+                try:
+                    t_val_int = int(t_val)
+                    timestamp = datetime.fromtimestamp(t_val_int / 1000, timezone.utc)
+                except Exception:
+                    # Try ISO8601 string
+                    try:
+                        iso_str = t_val.rstrip('Z')
+                        timestamp = datetime.fromisoformat(iso_str)
+                        if timestamp.tzinfo is None:
+                            timestamp = timestamp.replace(tzinfo=timezone.utc)
+                        logger.debug(f"Parsed ISO8601 trade timestamp: {t_val} -> {timestamp}")
+                    except Exception as e:
+                        logger.error(f"Failed to parse trade timestamp: {t_val}, error: {e}")
+                        return None
             tick = Tick(
                 symbol=data['S'],
-                timestamp=datetime.fromtimestamp(data['t'] / 1000, timezone.utc),
+                timestamp=timestamp,
                 bid=0.0,  # Will be updated by quote
                 ask=0.0,  # Will be updated by quote
                 bid_size=0,
@@ -227,16 +343,35 @@ class WebSocketDataFeed:
                 timestamp=tick.timestamp,
                 tick=tick
             )
-        except (KeyError, ValueError) as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.error(f"Failed to parse trade: {e}")
             return None
     
     def _parse_bar(self, data: Dict[str, Any]) -> Optional[MarketData]:
         """Parse bar message"""
         try:
+            t_val = data['t']
+            timestamp = None
+            if isinstance(t_val, int):
+                timestamp = datetime.fromtimestamp(t_val / 1000, timezone.utc)
+            else:
+                try:
+                    t_val_int = int(t_val)
+                    timestamp = datetime.fromtimestamp(t_val_int / 1000, timezone.utc)
+                except Exception:
+                    # Try ISO8601 string
+                    try:
+                        iso_str = t_val.rstrip('Z')
+                        timestamp = datetime.fromisoformat(iso_str)
+                        if timestamp.tzinfo is None:
+                            timestamp = timestamp.replace(tzinfo=timezone.utc)
+                        logger.debug(f"Parsed ISO8601 bar timestamp: {t_val} -> {timestamp}")
+                    except Exception as e:
+                        logger.error(f"Failed to parse bar timestamp: {t_val}, error: {e}")
+                        return None
             ohlcv = OHLCV(
                 symbol=data['S'],
-                timestamp=datetime.fromtimestamp(data['t'] / 1000, timezone.utc),
+                timestamp=timestamp,
                 open=float(data['o']),
                 high=float(data['h']),
                 low=float(data['l']),
@@ -244,13 +379,12 @@ class WebSocketDataFeed:
                 volume=int(data['v']),
                 timeframe="1m"
             )
-            
             return MarketData(
                 symbol=ohlcv.symbol,
                 timestamp=ohlcv.timestamp,
                 ohlcv=ohlcv
             )
-        except (KeyError, ValueError) as e:
+        except (KeyError, ValueError, TypeError) as e:
             logger.error(f"Failed to parse bar: {e}")
             return None
     
@@ -367,14 +501,20 @@ class MarketDataManager:
             # Call symbol-specific callbacks
             for callback in self.callbacks.get(data.symbol, []):
                 try:
-                    callback(data)
+                    if inspect.iscoroutinefunction(callback):
+                        asyncio.create_task(callback(data))
+                    else:
+                        callback(data)
                 except Exception as e:
                     logger.error(f"Callback error for {data.symbol}: {e}")
             
             # Call global callbacks
             for callback in self.callbacks.get('*', []):
                 try:
-                    callback(data)
+                    if inspect.iscoroutinefunction(callback):
+                        asyncio.create_task(callback(data))
+                    else:
+                        callback(data)
                 except Exception as e:
                     logger.error(f"Global callback error: {e}")
                     
@@ -386,40 +526,45 @@ class MarketDataManager:
         try:
             if not self.redis_client:
                 return
-            
             # Cache latest tick data
             if data.tick:
                 key = f"tick:{data.symbol}"
                 value = {
-                    'symbol': data.tick.symbol,
-                    'timestamp': data.tick.timestamp.isoformat(),
-                    'bid': data.tick.bid,
-                    'ask': data.tick.ask,
-                    'bid_size': data.tick.bid_size,
-                    'ask_size': data.tick.ask_size,
-                    'last_price': data.tick.last_price,
-                    'last_size': data.tick.last_size,
-                    'volume': data.tick.volume
+                    'symbol': data.tick.symbol or '',
+                    'timestamp': data.tick.timestamp.isoformat() if data.tick.timestamp else '',
+                    'bid': data.tick.bid if data.tick.bid is not None else 0.0,
+                    'ask': data.tick.ask if data.tick.ask is not None else 0.0,
+                    'bid_size': data.tick.bid_size if data.tick.bid_size is not None else 0,
+                    'ask_size': data.tick.ask_size if data.tick.ask_size is not None else 0,
+                    'last_price': data.tick.last_price if data.tick.last_price is not None else 0.0,
+                    'last_size': data.tick.last_size if data.tick.last_size is not None else 0,
+                    'volume': data.tick.volume if data.tick.volume is not None else 0
                 }
+                for k, v in value.items():
+                    if v is None:
+                        logger.warning(f"Redis tick cache: field {k} is None for symbol {data.symbol}")
+                        value[k] = '' if isinstance(v, str) else 0
                 self.redis_client.hset(key, mapping=value)
                 self.redis_client.expire(key, 3600)  # 1 hour TTL
-            
             # Cache OHLCV data
             if data.ohlcv:
                 key = f"ohlcv:{data.symbol}:{data.ohlcv.timeframe}"
                 value = {
-                    'symbol': data.ohlcv.symbol,
-                    'timestamp': data.ohlcv.timestamp.isoformat(),
-                    'open': data.ohlcv.open,
-                    'high': data.ohlcv.high,
-                    'low': data.ohlcv.low,
-                    'close': data.ohlcv.close,
-                    'volume': data.ohlcv.volume,
-                    'timeframe': data.ohlcv.timeframe
+                    'symbol': data.ohlcv.symbol or '',
+                    'timestamp': data.ohlcv.timestamp.isoformat() if data.ohlcv.timestamp else '',
+                    'open': data.ohlcv.open if data.ohlcv.open is not None else 0.0,
+                    'high': data.ohlcv.high if data.ohlcv.high is not None else 0.0,
+                    'low': data.ohlcv.low if data.ohlcv.low is not None else 0.0,
+                    'close': data.ohlcv.close if data.ohlcv.close is not None else 0.0,
+                    'volume': data.ohlcv.volume if data.ohlcv.volume is not None else 0,
+                    'timeframe': data.ohlcv.timeframe or ''
                 }
+                for k, v in value.items():
+                    if v is None:
+                        logger.warning(f"Redis OHLCV cache: field {k} is None for symbol {data.symbol}")
+                        value[k] = '' if isinstance(v, str) else 0
                 self.redis_client.hset(key, mapping=value)
                 self.redis_client.expire(key, 86400)  # 24 hours TTL
-                
         except Exception as e:
             logger.error(f"Redis caching error: {e}")
     

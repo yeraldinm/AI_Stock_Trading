@@ -4,7 +4,8 @@ Configuration module for the Low Latency Trading Platform
 import os
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
-from pydantic import BaseSettings, validator
+from pydantic_settings import BaseSettings
+from pydantic import validator
 from dotenv import load_dotenv
 
 load_dotenv()
