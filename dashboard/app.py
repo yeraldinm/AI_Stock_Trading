@@ -17,10 +17,12 @@ import numpy as np
 from dataclasses import asdict
 import sys
 import os
+import atexit
 
 # Add parent directory to path to import trading platform modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from trading_platform import TradingPlatform
 from config import config
 from core.models import MarketData, Order, Fill, Portfolio
 from core.market_data import MarketDataManager
@@ -36,6 +38,12 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'trading_dashboard_secret_key_2024'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 CORS(app)
+
+# Trading platform instance
+platform: Optional[TradingPlatform] = None
+platform_thread: Optional[threading.Thread] = None
+platform_lock = threading.Lock()
+
 
 # Redis connection for real-time data
 redis_client = redis.Redis(
@@ -131,6 +139,61 @@ def index():
     """Main dashboard page"""
     return render_template('dashboard.html')
 
+@app.route('/api/platform/start', methods=['POST'])
+def start_platform():
+    """Start the trading platform"""
+    global platform, platform_thread
+    with platform_lock:
+        if platform is None:
+            platform = TradingPlatform()
+            
+            def run_platform():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(platform.initialize())
+                loop.run_until_complete(platform.start())
+
+            platform_thread = threading.Thread(target=run_platform, daemon=True)
+            platform_thread.start()
+            
+            logger.info("Trading platform started in background thread")
+            return jsonify({'status': 'success', 'message': 'Platform starting'})
+        
+        return jsonify({'status': 'warning', 'message': 'Platform is already running or starting'})
+
+@app.route('/api/platform/stop', methods=['POST'])
+def stop_platform():
+    """Stop the trading platform"""
+    global platform, platform_thread
+    with platform_lock:
+        if platform and platform.running:
+            
+            async def do_stop():
+                await platform.stop()
+
+            # Run the async stop function in the platform's event loop
+            stop_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(stop_loop)
+            stop_loop.run_until_complete(do_stop())
+
+            platform_thread.join(timeout=10)
+            
+            platform = None
+            platform_thread = None
+            
+            logger.info("Trading platform stopped")
+            return jsonify({'status': 'success', 'message': 'Platform stopped'})
+        
+        return jsonify({'status': 'warning', 'message': 'Platform is not running'})
+
+@app.route('/api/platform/status')
+def get_platform_status():
+    """Get the status of the trading platform"""
+    if platform:
+        return jsonify(platform.get_platform_status())
+    
+    return jsonify({'running': False})
+    
 @app.route('/api/market-data')
 def get_market_data():
     """Get current market data for all symbols"""
@@ -261,124 +324,63 @@ def on_unsubscribe_symbol(data):
         leave_room(f'symbol_{symbol}')
         logger.info(f"Client {request.sid} unsubscribed from {symbol}")
 
-def generate_sample_data():
-    """Generate sample real-time data for demonstration"""
-    symbols = ['AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN', 'NVDA', 'META', 'NFLX']
-    base_prices = {
-        'AAPL': 150.0, 'GOOGL': 2800.0, 'MSFT': 330.0, 'TSLA': 250.0,
-        'AMZN': 3200.0, 'NVDA': 450.0, 'META': 320.0, 'NFLX': 420.0
-    }
+def listen_to_redis():
+    """Listen to Redis pub/sub for real-time updates from the trading platform"""
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe({
+        'market_data': lambda m: dashboard_manager.update_market_data(m['data']),
+        'portfolio_updates': lambda m: dashboard_manager.update_portfolio(json.loads(m['data'])),
+        'order_updates': lambda m: dashboard_manager.add_order(json.loads(m['data'])),
+        'fill_updates': lambda m: dashboard_manager.add_fill(json.loads(m['data'])),
+        'risk_updates': lambda m: dashboard_manager.update_risk_metrics(json.loads(m['data'])),
+        'strategy_updates': lambda m: dashboard_manager.update_strategy_performance(
+            json.loads(m['data'])['strategy'], 
+            json.loads(m['data'])['data']
+        )
+    })
     
-    current_prices = base_prices.copy()
-    
+    logger.info("Subscribed to Redis channels for real-time updates")
+    pubsub.run_in_thread(sleep_time=0.01)
+
+def platform_status_emitter():
+    """Periodically emit platform status to clients"""
     while True:
         try:
-            # Update market data
-            for symbol in symbols:
-                change = np.random.normal(0, 0.5)
-                current_prices[symbol] += change
+            status = {}
+            if platform:
+                status = platform.get_platform_status()
+            else:
+                status = {'running': False}
                 
-                market_data = {
-                    'price': round(current_prices[symbol], 2),
-                    'bid': round(current_prices[symbol] - 0.01, 2),
-                    'ask': round(current_prices[symbol] + 0.01, 2),
-                    'volume': np.random.randint(1000, 50000),
-                    'change': round(change, 2),
-                    'change_percent': round((change / current_prices[symbol]) * 100, 2)
-                }
-                
-                dashboard_manager.update_market_data(symbol, market_data)
-            
-            # Update portfolio data
-            total_value = sum(current_prices[symbol] * np.random.randint(10, 100) for symbol in symbols[:4])
-            portfolio_data = {
-                'total_value': round(total_value, 2),
-                'cash': round(np.random.uniform(10000, 50000), 2),
-                'pnl_today': round(np.random.normal(0, 1000), 2),
-                'pnl_total': round(np.random.normal(0, 5000), 2),
-                'positions': [
-                    {
-                        'symbol': symbol,
-                        'quantity': np.random.randint(-100, 100),
-                        'avg_price': round(current_prices[symbol] + np.random.normal(0, 5), 2),
-                        'market_value': round(current_prices[symbol] * np.random.randint(10, 100), 2),
-                        'unrealized_pnl': round(np.random.normal(0, 500), 2)
-                    }
-                    for symbol in symbols[:4]
-                ]
-            }
-            
-            dashboard_manager.update_portfolio(portfolio_data)
-            
-            # Update risk metrics
-            risk_data = {
-                'var_95': round(np.random.uniform(1000, 5000), 2),
-                'max_drawdown': round(np.random.uniform(0.05, 0.15), 3),
-                'sharpe_ratio': round(np.random.uniform(0.5, 2.0), 2),
-                'volatility': round(np.random.uniform(0.15, 0.35), 3),
-                'beta': round(np.random.uniform(0.8, 1.2), 2),
-                'exposure': round(np.random.uniform(0.6, 0.9), 2)
-            }
-            
-            dashboard_manager.update_risk_metrics(risk_data)
-            
-            # Update strategy performance
-            strategies = ['MeanReversion', 'MomentumBreakout', 'AIStrategy']
-            for strategy in strategies:
-                performance_data = {
-                    'pnl': round(np.random.normal(0, 1000), 2),
-                    'pnl_percent': round(np.random.normal(0, 5), 2),
-                    'trades_today': np.random.randint(0, 50),
-                    'win_rate': round(np.random.uniform(0.4, 0.7), 2),
-                    'avg_trade': round(np.random.normal(0, 100), 2),
-                    'max_drawdown': round(np.random.uniform(0.02, 0.1), 3),
-                    'sharpe_ratio': round(np.random.uniform(0.3, 2.5), 2)
-                }
-                
-                dashboard_manager.update_strategy_performance(strategy, performance_data)
-            
-            # Occasionally generate orders and fills
-            if np.random.random() < 0.1:  # 10% chance each cycle
-                symbol = np.random.choice(symbols)
-                order = {
-                    'id': f"ORDER_{int(time.time() * 1000)}",
-                    'symbol': symbol,
-                    'side': np.random.choice(['BUY', 'SELL']),
-                    'quantity': np.random.randint(10, 1000),
-                    'order_type': np.random.choice(['MARKET', 'LIMIT']),
-                    'price': round(current_prices[symbol], 2),
-                    'status': np.random.choice(['PENDING', 'FILLED', 'CANCELLED'])
-                }
-                dashboard_manager.add_order(order)
-                
-                # Sometimes generate a fill for the order
-                if np.random.random() < 0.7 and order['status'] == 'FILLED':
-                    fill = {
-                        'id': f"FILL_{int(time.time() * 1000)}",
-                        'order_id': order['id'],
-                        'symbol': symbol,
-                        'side': order['side'],
-                        'quantity': order['quantity'],
-                        'price': round(current_prices[symbol] + np.random.normal(0, 0.1), 2),
-                        'commission': round(np.random.uniform(1, 10), 2)
-                    }
-                    dashboard_manager.add_fill(fill)
-            
-            time.sleep(1)  # Update every second
+            socketio.emit('platform_status_update', status)
             
         except Exception as e:
-            logger.error(f"Error in data generation: {e}")
-            time.sleep(5)
+            logger.error(f"Error emitting platform status: {e}")
+            
+        time.sleep(5)
 
-def start_data_generation():
-    """Start the background data generation thread"""
-    data_thread = threading.Thread(target=generate_sample_data, daemon=True)
-    data_thread.start()
-    logger.info("Sample data generation thread started")
+def cleanup_platform():
+    """Ensure graceful shutdown of the platform when the app exits"""
+    if platform and platform.running:
+        logger.info("Flask app is shutting down, stopping platform...")
+        
+        async def do_stop():
+            await platform.stop()
+            
+        stop_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(stop_loop)
+        stop_loop.run_until_complete(do_stop())
 
 if __name__ == '__main__':
-    # Start background data generation
-    start_data_generation()
+    # Start Redis listener
+    listen_to_redis()
+    
+    # Start platform status emitter
+    status_thread = threading.Thread(target=platform_status_emitter, daemon=True)
+    status_thread.start()
+    
+    # Register shutdown hook
+    atexit.register(cleanup_platform)
     
     # Run the Flask-SocketIO app
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
