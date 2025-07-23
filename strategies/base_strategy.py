@@ -148,11 +148,22 @@ class BaseStrategy(ABC):
             strategy_id=self.strategy_id
         )
         
-        self.orders[order.id] = order
         return order
     
+    def on_order_accepted(self, order: Order):
+        """
+        Callback executed when an order has been accepted by the broker.
+        This is the point where the order is officially tracked by the strategy.
+        """
+        if order.id not in self.orders:
+            self.orders[order.id] = order
+            logger.info(f"Order {order.id} for strategy {self.strategy_id} confirmed and tracked.")
+        else:
+            # This can happen if the order manager sends a duplicate confirmation
+            logger.warning(f"Received duplicate confirmation for order {order.id}")
+
     async def place_order(self, order: Order):
-        """Place order and notify callbacks"""
+        """Propose an order to the trading platform for execution."""
         try:
             # Validate order against strategy limits
             if not self._validate_order(order):
@@ -166,7 +177,7 @@ class BaseStrategy(ABC):
                 except Exception as e:
                     logger.error(f"Order callback error: {e}")
             
-            logger.info(f"Order placed by {self.name}: {order.symbol} {order.side.value} {order.quantity}")
+            logger.info(f"Order proposed by {self.name}: {order.symbol} {order.side.value} {order.quantity}")
             
         except Exception as e:
             logger.error(f"Order placement error: {e}")

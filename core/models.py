@@ -178,6 +178,13 @@ class Order:
         """Check if order is active (can be filled)"""
         return self.status in [OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED]
     
+    def on_submitted(self, broker_order_id: Optional[str] = None):
+        """Mark order as submitted by the broker"""
+        self.status = OrderStatus.SUBMITTED
+        if broker_order_id:
+            self.broker_order_id = broker_order_id
+        self.updated_at = datetime.now(timezone.utc)
+
     def update_fill(self, fill_quantity: float, fill_price: float):
         """Update order with fill information"""
         self.filled_quantity += fill_quantity

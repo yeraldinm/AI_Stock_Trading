@@ -118,6 +118,7 @@ class TradingPlatform:
         self.market_data_manager.subscribe('*', self._on_market_data)
         
         # Order manager callbacks
+        self.order_manager.add_order_accepted_callback(self._on_order_accepted)
         self.order_manager.fill_processor.add_callback(self._on_fill)
         
         # Risk manager callbacks
@@ -207,6 +208,18 @@ class TradingPlatform:
         except Exception as e:
             logger.error("Market data processing error", error=str(e))
     
+    def _on_order_accepted(self, order: Order):
+        """Handle order acceptance confirmation from the OrderManager."""
+        try:
+            if order.strategy_id and order.strategy_id in self.strategies:
+                strategy = self.strategies[order.strategy_id]
+                strategy.on_order_accepted(order)
+                logger.info(f"Order {order.id} relayed to strategy {order.strategy_id}")
+            else:
+                logger.warning(f"No strategy found for accepted order {order.id}", strategy_id=order.strategy_id)
+        except Exception as e:
+            logger.error("Order acceptance handling error", error=str(e), order_id=order.id)
+
     def _on_strategy_order(self, order: Order):
         """Handle order from strategy"""
         try:
@@ -320,7 +333,7 @@ class TradingPlatform:
             order_monitoring_task = asyncio.create_task(
                 self.order_manager.start_order_monitoring()
             )
-            tasks.append(order_monitoring_task)
+            # tasks.append(order_monitoring_task)
             
             # Start performance monitoring
             perf_task = asyncio.create_task(self._performance_monitor())
@@ -378,6 +391,9 @@ class TradingPlatform:
             try:
                 await asyncio.sleep(60)  # Check every minute
                 
+                # Reconcile positions with the broker
+                await self._reconcile_positions()
+
                 # Check component health
                 health_status = {
                     'market_data_manager': self.market_data_manager.running,
@@ -425,6 +441,53 @@ class TradingPlatform:
         except Exception as e:
             logger.error("Platform stop error", error=str(e))
     
+    async def _reconcile_positions(self):
+        """Synchronize local portfolio positions with the broker."""
+        try:
+            logger.info("Starting position reconciliation with broker...")
+            
+            # Fetch all positions from Alpaca
+            broker_positions = self.order_manager.api_client.list_positions()
+            broker_symbols = {p.symbol for p in broker_positions}
+
+            # 1. Update local positions that exist at the broker
+            for p in broker_positions:
+                local_position = self.portfolio.get_position(p.symbol)
+                
+                broker_qty = float(p.qty)
+                broker_avg_price = float(p.avg_entry_price)
+
+                if local_position.quantity != broker_qty or local_position.average_price != broker_avg_price:
+                    logger.warning(f"Reconciling position for {p.symbol}",
+                                   local_qty=local_position.quantity, broker_qty=broker_qty)
+                    
+                    local_position.quantity = broker_qty
+                    local_position.average_price = broker_avg_price
+                    # We can't know the realized P&L from this, so we leave it.
+                    # The market value and unrealized P&L will be updated on the next market data tick.
+
+            # 2. Remove local positions that no longer exist at the broker
+            local_symbols = set(self.portfolio.positions.keys())
+            symbols_to_remove = local_symbols - broker_symbols
+            
+            for symbol in symbols_to_remove:
+                local_position = self.portfolio.get_position(symbol)
+                if not local_position.is_flat:
+                    logger.warning(f"Removing ghost position for {symbol} not found at broker.",
+                                   local_qty=local_position.quantity)
+                    # Reset the position. We assume any P&L was already realized.
+                    local_position.quantity = 0
+                    local_position.average_price = 0
+                    local_position.market_value = 0
+                    local_position.unrealized_pnl = 0
+
+            # Recalculate portfolio totals after reconciliation
+            self.portfolio._calculate_totals()
+            logger.info("Position reconciliation completed.")
+
+        except Exception as e:
+            logger.error("Position reconciliation failed", error=str(e))
+
     def get_platform_status(self) -> Dict[str, Any]:
         """Get comprehensive platform status"""
         return {

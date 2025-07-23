@@ -361,6 +361,7 @@ class OrderManager:
         self.router = OrderRouter()
         self.execution_engine = None
         self.fill_processor = FillProcessor(portfolio)
+        self.order_accepted_callbacks = []
         
         # Order tracking
         self.orders = {}  # order_id -> Order
@@ -401,6 +402,10 @@ class OrderManager:
             logger.error(f"Order manager initialization error: {e}")
             raise
     
+    def add_order_accepted_callback(self, callback: Callable[[Order], None]):
+        """Add a callback to be invoked when an order is accepted by the broker."""
+        self.order_accepted_callbacks.append(callback)
+
     async def submit_order(self, order: Order) -> tuple[bool, str]:
         """Submit order for execution"""
         try:
@@ -425,6 +430,15 @@ class OrderManager:
             
             if success:
                 logger.info(f"Order submitted successfully: {order.id}")
+                
+                # Notify that the order has been accepted by the broker
+                order.on_submitted()
+                for callback in self.order_accepted_callbacks:
+                    try:
+                        callback(order)
+                    except Exception as e:
+                        logger.error(f"Order accepted callback error: {e}")
+
                 return True, "Order submitted"
             else:
                 # Remove from active orders if submission failed
@@ -521,37 +535,62 @@ class OrderManager:
                 await asyncio.sleep(5)
     
     async def _check_order_updates(self):
-        """Check for order updates from broker"""
+        """
+        Reconcile all active orders with the broker (Alpaca).
+        This method acts as the source of truth for order state.
+        """
         try:
-            for order in list(self.active_orders.values()):
-                if order.broker_order_id:
-                    # Get order status from broker
-                    broker_order = self.api_client.get_order(order.broker_order_id)
+            broker_orders = self.api_client.list_orders(status='open')
+            broker_order_ids = {o.id for o in broker_orders}
+
+            # 1. Update or add orders that are open at the broker
+            for broker_order in broker_orders:
+                order_id = broker_order.client_order_id
+                
+                if order_id in self.orders:
+                    order = self.orders[order_id]
                     
-                    # Update order status
-                    old_status = order.status
-                    order.status = OrderStatus(broker_order.status)
-                    
-                    # Check for fills
-                    filled_qty = float(broker_order.filled_qty or 0)
-                    if filled_qty > order.filled_quantity:
-                        # New fill
-                        fill_qty = filled_qty - order.filled_quantity
+                    # Update status if changed
+                    new_status = OrderStatus(broker_order.status)
+                    if order.status != new_status:
+                        logger.info(f"Updating order {order_id} status: {order.status} -> {new_status}")
+                        order.status = new_status
+
+                    # Check for new fills
+                    broker_filled_qty = float(broker_order.filled_qty or 0)
+                    if broker_filled_qty > order.filled_quantity:
+                        fill_qty = broker_filled_qty - order.filled_quantity
                         fill_price = float(broker_order.filled_avg_price or 0)
                         
                         fill = Fill(
-                            order_id=order.id,
-                            symbol=order.symbol,
-                            side=order.side,
-                            quantity=fill_qty,
-                            price=fill_price,
+                            order_id=order.id, symbol=order.symbol, side=order.side,
+                            quantity=fill_qty, price=fill_price,
                             execution_id=broker_order.id
                         )
-                        
                         self._on_fill(fill)
+                else:
+                    # This is an order that exists on the broker but not in our memory.
+                    # This is rare but could happen if the platform restarted.
+                    # We will log it but won't add it back to a strategy automatically.
+                    logger.warning(f"Found untracked open order at broker: {broker_order.id}",
+                                   symbol=broker_order.symbol, qty=broker_order.qty)
+
+            # 2. Remove local active orders that are no longer open at the broker
+            local_active_ids = list(self.active_orders.keys())
+            for order_id in local_active_ids:
+                if self.orders[order_id].broker_order_id not in broker_order_ids:
+                    logger.warning(f"Removing ghost active order {order_id} not found at broker.")
+                    order = self.orders[order_id]
                     
-                    # Remove from active if no longer active
-                    if not order.is_active and order.id in self.active_orders:
+                    # We need to find its final state from the broker
+                    try:
+                        final_broker_order = self.api_client.get_order(order.broker_order_id)
+                        order.status = OrderStatus(final_broker_order.status)
+                    except Exception:
+                        # If it's not found at all, mark as cancelled as a safe default
+                        order.status = OrderStatus.CANCELLED
+                    
+                    if order.id in self.active_orders:
                         del self.active_orders[order.id]
                         
         except Exception as e:
