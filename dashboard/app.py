@@ -528,6 +528,23 @@ def platform_status_emitter():
             status = {}
             if platform:
                 status = platform.get_platform_status()
+                
+                # Also emit strategy updates
+                if platform.strategies:
+                    strategies_data = {}
+                    for strategy_id, strategy in platform.strategies.items():
+                        strategies_data[strategy_id] = {
+                            'id': strategy_id,
+                            'name': strategy.name,
+                            'enabled': strategy.enabled,
+                            'symbols': strategy.symbols,
+                            'parameters': strategy.parameters,
+                            'performance': strategy.get_performance_summary(),
+                            'positions': {symbol: pos.to_dict() for symbol, pos in strategy.positions.items()},
+                            'orders_count': len(strategy.orders),
+                            'last_update': strategy.last_update.isoformat() if strategy.last_update else None
+                        }
+                    socketio.emit('strategy_status_update', strategies_data)
             else:
                 status = {'running': False}
                 

@@ -445,6 +445,20 @@ class TradingDashboard {
             this.loadHistoricalData(e.target.value);
         });
         
+        // Strategy management buttons
+        document.getElementById('create-strategy-btn').addEventListener('click', () => {
+            const modal = new bootstrap.Modal(document.getElementById('createStrategyModal'));
+            modal.show();
+        });
+        
+        document.getElementById('refresh-strategies-btn').addEventListener('click', () => {
+            this.loadStrategies();
+        });
+        
+        document.getElementById('create-strategy-submit').addEventListener('click', () => {
+            this.createStrategy();
+        });
+        
         // Trade form
         document.getElementById('trade-form').addEventListener('submit', (e) => {
             e.preventDefault();
@@ -534,6 +548,289 @@ class TradingDashboard {
         
         const bsToast = new bootstrap.Toast(toast);
         bsToast.show();
+    }
+    
+    // Strategy Management Methods
+    async loadStrategies() {
+        try {
+            const response = await fetch('/api/strategies');
+            const strategies = await response.json();
+            this.updateStrategiesTable(strategies);
+        } catch (error) {
+            console.error('Error loading strategies:', error);
+        }
+    }
+    
+    updateStrategiesTable(strategies) {
+        const tableBody = document.getElementById('strategies-table');
+        if (!tableBody) return;
+        
+        tableBody.innerHTML = '';
+        
+        Object.values(strategies).forEach(strategy => {
+            const row = document.createElement('tr');
+            
+            const statusBadge = strategy.enabled ? 
+                '<span class="badge bg-success">Running</span>' : 
+                '<span class="badge bg-secondary">Stopped</span>';
+            
+            const pnl = strategy.performance?.total_pnl || 0;
+            const pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+            const pnlSymbol = pnl >= 0 ? '+' : '';
+            
+            row.innerHTML = `
+                <td>
+                    <strong>${strategy.name}</strong><br>
+                    <small class="text-muted">${strategy.id}</small>
+                </td>
+                <td>${statusBadge}</td>
+                <td>
+                    <small>${strategy.symbols.join(', ')}</small>
+                </td>
+                <td class="${pnlClass}">
+                    ${pnlSymbol}$${pnl.toFixed(2)}
+                </td>
+                <td>
+                    <span class="badge bg-info">${strategy.performance?.active_positions || 0}</span>
+                </td>
+                <td>
+                    <span class="badge bg-warning">${strategy.performance?.active_orders || 0}</span>
+                </td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        ${strategy.enabled ? 
+                            `<button class="btn btn-outline-warning" onclick="dashboard.stopStrategy('${strategy.id}')">
+                                <i class="bi bi-pause-fill"></i>
+                            </button>` :
+                            `<button class="btn btn-outline-success" onclick="dashboard.startStrategy('${strategy.id}')">
+                                <i class="bi bi-play-fill"></i>
+                            </button>`
+                        }
+                        <button class="btn btn-outline-info" onclick="dashboard.showStrategyDetails('${strategy.id}')">
+                            <i class="bi bi-info-circle"></i>
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="dashboard.deleteStrategy('${strategy.id}')">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+    }
+    
+    async startStrategy(strategyId) {
+        try {
+            const response = await fetch(`/api/strategies/${strategyId}/start`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.showNotification('Strategy Started', result.message, 'success');
+                this.loadStrategies();
+            } else {
+                this.showNotification('Error', result.message, 'danger');
+            }
+        } catch (error) {
+            console.error('Error starting strategy:', error);
+            this.showNotification('Error', 'Failed to start strategy', 'danger');
+        }
+    }
+    
+    async stopStrategy(strategyId) {
+        try {
+            const response = await fetch(`/api/strategies/${strategyId}/stop`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.showNotification('Strategy Stopped', result.message, 'warning');
+                this.loadStrategies();
+            } else {
+                this.showNotification('Error', result.message, 'danger');
+            }
+        } catch (error) {
+            console.error('Error stopping strategy:', error);
+            this.showNotification('Error', 'Failed to stop strategy', 'danger');
+        }
+    }
+    
+    async deleteStrategy(strategyId) {
+        if (!confirm('Are you sure you want to delete this strategy?')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`/api/strategies/${strategyId}/delete`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.showNotification('Strategy Deleted', result.message, 'info');
+                this.loadStrategies();
+            } else {
+                this.showNotification('Error', result.message, 'danger');
+            }
+        } catch (error) {
+            console.error('Error deleting strategy:', error);
+            this.showNotification('Error', 'Failed to delete strategy', 'danger');
+        }
+    }
+    
+    async showStrategyDetails(strategyId) {
+        try {
+            const response = await fetch(`/api/strategies/${strategyId}/performance`);
+            const data = await response.json();
+            
+            // Update modal content
+            this.updateStrategyModal(data);
+            
+            // Show modal
+            const modal = new bootstrap.Modal(document.getElementById('strategyModal'));
+            modal.show();
+            
+        } catch (error) {
+            console.error('Error loading strategy details:', error);
+            this.showNotification('Error', 'Failed to load strategy details', 'danger');
+        }
+    }
+    
+    updateStrategyModal(data) {
+        const metricsDiv = document.getElementById('strategy-metrics');
+        const positionsDiv = document.getElementById('strategy-positions');
+        const tradesDiv = document.getElementById('strategy-trades');
+        
+        // Update metrics
+        const metrics = data.basic_metrics || {};
+        metricsDiv.innerHTML = `
+            <div class="row">
+                <div class="col-6">
+                    <div class="metric-item">
+                        <small class="text-muted">Total P&L</small>
+                        <div class="${metrics.total_pnl >= 0 ? 'text-success' : 'text-danger'}">
+                            $${(metrics.total_pnl || 0).toFixed(2)}
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6">
+                    <div class="metric-item">
+                        <small class="text-muted">Win Rate</small>
+                        <div>${((metrics.win_rate || 0) * 100).toFixed(1)}%</div>
+                    </div>
+                </div>
+                <div class="col-6">
+                    <div class="metric-item">
+                        <small class="text-muted">Total Trades</small>
+                        <div>${metrics.total_trades || 0}</div>
+                    </div>
+                </div>
+                <div class="col-6">
+                    <div class="metric-item">
+                        <small class="text-muted">Signals Generated</small>
+                        <div>${metrics.signals_generated || 0}</div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Update positions
+        const positions = data.positions || {};
+        if (Object.keys(positions).length === 0) {
+            positionsDiv.innerHTML = '<p class="text-muted">No active positions</p>';
+        } else {
+            let positionsHtml = '<div class="table-responsive"><table class="table table-sm table-dark"><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>P&L</th></tr></thead><tbody>';
+            
+            Object.values(positions).forEach(pos => {
+                const pnlClass = pos.unrealized_pnl >= 0 ? 'text-success' : 'text-danger';
+                positionsHtml += `
+                    <tr>
+                        <td>${pos.symbol}</td>
+                        <td>${pos.quantity}</td>
+                        <td>$${pos.average_price.toFixed(2)}</td>
+                        <td class="${pnlClass}">$${pos.unrealized_pnl.toFixed(2)}</td>
+                    </tr>
+                `;
+            });
+            
+            positionsHtml += '</tbody></table></div>';
+            positionsDiv.innerHTML = positionsHtml;
+        }
+        
+        // Update trades
+        const trades = data.trade_history || [];
+        if (trades.length === 0) {
+            tradesDiv.innerHTML = '<p class="text-muted">No recent trades</p>';
+        } else {
+            let tradesHtml = '<div class="table-responsive"><table class="table table-sm table-dark"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th></tr></thead><tbody>';
+            
+            trades.slice(-10).forEach(trade => {
+                const time = new Date(trade.timestamp || trade.created_at).toLocaleTimeString();
+                tradesHtml += `
+                    <tr>
+                        <td>${time}</td>
+                        <td>${trade.symbol}</td>
+                        <td><span class="badge ${trade.side === 'buy' ? 'bg-success' : 'bg-danger'}">${trade.side}</span></td>
+                        <td>${trade.quantity}</td>
+                        <td>$${(trade.price || 0).toFixed(2)}</td>
+                    </tr>
+                `;
+            });
+            
+            tradesHtml += '</tbody></table></div>';
+            tradesDiv.innerHTML = tradesHtml;
+        }
+    }
+    
+    async createStrategy() {
+        const form = document.getElementById('create-strategy-form');
+        const formData = new FormData(form);
+        
+        const strategyData = {
+            type: document.getElementById('strategy-type').value,
+            symbols: document.getElementById('strategy-symbols').value.split(',').map(s => s.trim()),
+            parameters: {
+                lookback_period: parseInt(document.getElementById('lookback-period').value),
+                deviation_threshold: parseFloat(document.getElementById('deviation-threshold').value),
+                max_position_size: parseFloat(document.getElementById('max-position-size').value),
+                stop_loss: parseFloat(document.getElementById('stop-loss').value) / 100
+            }
+        };
+        
+        try {
+            const response = await fetch('/api/strategies/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(strategyData)
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.showNotification('Strategy Created', result.message, 'success');
+                
+                // Close modal and refresh strategies
+                const modal = bootstrap.Modal.getInstance(document.getElementById('createStrategyModal'));
+                modal.hide();
+                form.reset();
+                this.loadStrategies();
+            } else {
+                this.showNotification('Error', result.error || result.message, 'danger');
+            }
+        } catch (error) {
+            console.error('Error creating strategy:', error);
+            this.showNotification('Error', 'Failed to create strategy', 'danger');
+        }
+    }
+    
+    handleStrategyStatusUpdate(data) {
+        // Refresh strategies table when status updates are received
+        this.loadStrategies();
     }
 }
 
