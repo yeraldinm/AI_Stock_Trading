@@ -20,6 +20,7 @@ class TradingDashboard {
         this.initializeChart();
         this.setupEventListeners();
         this.updateClock();
+        this.loadStrategies();
         
         // Update clock every second
         setInterval(() => this.updateClock(), 1000);
@@ -65,6 +66,10 @@ class TradingDashboard {
         
         this.socket.on('strategy_performance_update', (data) => {
             this.handleStrategyPerformanceUpdate(data);
+        });
+        
+        this.socket.on('strategy_status_update', (data) => {
+            this.handleStrategyStatusUpdate(data);
         });
     }
     
